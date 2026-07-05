@@ -1,0 +1,13 @@
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller build outputs
+build/
+dist/
+
+# Runtime yt-dlp updates (downloaded next to the app)
+libs/
+
+# Per-user app settings
+.vd_config
