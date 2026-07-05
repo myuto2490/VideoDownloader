@@ -1,12 +1,15 @@
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import filedialog, messagebox
+import importlib.abc
+import importlib.machinery
 import threading
 import sys
 import os
 import io
 import json
 import shutil
+import traceback
 import zipfile
 import urllib.request
 from datetime import datetime
@@ -28,12 +31,42 @@ os.makedirs(_LIBS_DIR, exist_ok=True)
 if _LIBS_DIR not in sys.path:
     sys.path.insert(0, _LIBS_DIR)   # libs/ 内の yt-dlp を優先
 
-try:
-    import yt_dlp
-    _YTDLP_SOURCE = "libs" if os.path.isdir(os.path.join(_LIBS_DIR, "yt_dlp")) else "bundled"
-except ImportError:
-    yt_dlp = None
-    _YTDLP_SOURCE = "none"
+
+class _LibsYtdlpFinder(importlib.abc.MetaPathFinder):
+    """PyInstaller の FrozenImporter は sys.path を無視して exe 内蔵の
+    yt_dlp を読み込んでしまうため、libs/yt_dlp が存在するときは
+    このファインダーを sys.meta_path の先頭に置いて libs/ 側を優先させる。"""
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname != "yt_dlp" and not fullname.startswith("yt_dlp."):
+            return None
+        search = [_LIBS_DIR] if fullname == "yt_dlp" else path
+        return importlib.machinery.PathFinder.find_spec(fullname, search)
+
+
+if os.path.isdir(os.path.join(_LIBS_DIR, "yt_dlp")):
+    sys.meta_path.insert(0, _LibsYtdlpFinder())
+
+
+def _import_ytdlp():
+    try:
+        import yt_dlp as m
+        src = "libs" if (getattr(m, "__file__", "") or "").startswith(_LIBS_DIR) else "bundled"
+        return m, src
+    except Exception:
+        # libs/ のコピーが壊れている場合は libs 優先を外して内蔵版で再試行
+        sys.meta_path[:] = [f for f in sys.meta_path
+                            if not isinstance(f, _LibsYtdlpFinder)]
+        for name in [n for n in sys.modules if n == "yt_dlp" or n.startswith("yt_dlp.")]:
+            del sys.modules[name]
+        try:
+            import yt_dlp as m
+            return m, "bundled"
+        except Exception:
+            return None, "none"
+
+
+yt_dlp, _YTDLP_SOURCE = _import_ytdlp()
 
 
 # ──────────────────────────────────────────────────────
@@ -424,8 +457,7 @@ class RoundedProgress(tk.Canvas):
         w, h = self.winfo_width(), self.winfo_height()
         if w < 10 or h < 4:
             return
-        _round_rect(self, 0, 0, w - 1, h - 1, h / 2,
-                    fill="#22223400", outline="")
+        # Tk は 8桁(アルファ付き)カラー非対応。トラックは不透明色のみで描く
         _round_rect(self, 0, 0, w - 1, h - 1, h / 2,
                     fill="#222234", outline="#222234")
         fw = w * self._pct / 100
@@ -512,6 +544,31 @@ _ICON_B64 = (
 )
 
 
+class _YdlLogger:
+    """yt-dlp の実行ログを GUI のログ欄へ流す。"""
+
+    def __init__(self, app):
+        self._app = app
+
+    def _post(self, msg, tag):
+        self._app.after(0, self._app._log_msg, msg, tag)
+
+    def debug(self, msg):
+        # [youtube] Extracting URL / [download] Destination / [Merger] ... など
+        # 進行段階が分かる行だけ表示する
+        if msg.startswith("[") and not msg.startswith("[debug]"):
+            self._post(msg, "dim")
+
+    def info(self, msg):
+        self._post(msg, "info")
+
+    def warning(self, msg):
+        self._post(f"警告: {msg}", "warn")
+
+    def error(self, msg):
+        self._post(msg, "error")
+
+
 # ──────────────────────────────────────────────────────
 #  Main application
 # ──────────────────────────────────────────────────────
@@ -537,6 +594,16 @@ class VideoDownloaderApp(tk.Tk):
         self._check_ytdlp()
         self.bind("<FocusIn>", self._auto_paste, add="+")
         self.bind("<Configure>", self._on_window_resize, add="+")
+
+    def report_callback_exception(self, exc, val, tb):
+        """GUI コールバック内の例外を stderr ではなくログに出す
+        （windowed exe では stderr が見えず「無反応」になるため）。"""
+        detail = "".join(traceback.format_exception(exc, val, tb))
+        print(detail, file=sys.stderr)
+        try:
+            self._log_msg(f"内部エラー: {val}", "error")
+        except Exception:
+            pass
 
     # ── Window chrome ──────────────────────────────────
     def _set_app_icon(self):
@@ -824,6 +891,9 @@ class VideoDownloaderApp(tk.Tk):
         src = "libs/" if _YTDLP_SOURCE == "libs" else "内蔵"
         self._ytdlp_badge.set(f"yt-dlp {ver}", P["SUCCESS"])
         self._log_msg(f"yt-dlp {ver} を検出しました ({src})。", "dim")
+        if not shutil.which("ffmpeg"):
+            self._log_msg("ffmpeg が見つかりません。高画質(映像+音声の結合)や "
+                          "MP3変換にはffmpegが必要です。", "warn")
 
     # ── Helpers ────────────────────────────────────────
     def _on_log_scroll(self, first, last):
@@ -928,6 +998,7 @@ class VideoDownloaderApp(tk.Tk):
         self._set_downloading(True)
         self._progress.set(0, P["ACCENT"])
         self._set_status("準備中…")
+        self._log_msg(f"開始: {url}", "dim")
         threading.Thread(target=self._download_thread,
                          args=(url, out), daemon=True).start()
 
@@ -936,8 +1007,6 @@ class VideoDownloaderApp(tk.Tk):
         self._log_msg("キャンセルを要求しました…", "warn")
 
     def _download_thread(self, url, out):
-        fmt_str, extra = self._build_format_string()
-
         def hook(d):
             if self._cancel_flag:
                 raise yt_dlp.utils.DownloadCancelled()
@@ -948,6 +1017,8 @@ class VideoDownloaderApp(tk.Tk):
                 speed = d.get("speed")
                 eta = d.get("eta")
                 parts = [f"{pct:.1f}%"]
+                if total:
+                    parts.append(f"{_fmt_size(dl)} / {_fmt_size(total)}")
                 if speed:
                     parts.append(_fmt_speed(speed))
                 if eta:
@@ -956,19 +1027,33 @@ class VideoDownloaderApp(tk.Tk):
                 self.after(0, self._update_progress,
                            pct, fn or "ダウンロード中…", "  ·  ".join(parts))
             elif d.get("status") == "finished":
-                self.after(0, self._update_progress, 100, "後処理中…", "")
+                self.after(0, self._update_progress, 100,
+                           "ダウンロード完了・後処理待ち…", "")
 
-        opts = {
-            "format": fmt_str,
-            "outtmpl": os.path.join(out, "%(title)s.%(ext)s"),
-            "merge_output_format": "mp4",
-            "noplaylist": True,
-            "progress_hooks": [hook],
-            "quiet": True,
-        }
-        opts.update(extra)
-        self._log_msg(f"開始: {url}", "dim")
+        def pp_hook(d):
+            if d.get("status") == "started":
+                pp = d.get("postprocessor", "")
+                label = {"Merger": "映像と音声を結合中…",
+                         "FFmpegExtractAudio": "音声を変換中…",
+                         "MoveFiles": "ファイルを移動中…"}.get(pp)
+                if label:
+                    self.after(0, self._set_status, label, P["FG"], "")
+
         try:
+            fmt_str, extra = self._build_format_string()
+            opts = {
+                "format": fmt_str,
+                "outtmpl": os.path.join(out, "%(title)s.%(ext)s"),
+                "merge_output_format": "mp4",
+                "noplaylist": True,
+                "progress_hooks": [hook],
+                "postprocessor_hooks": [pp_hook],
+                "logger": _YdlLogger(self),
+                "noprogress": True,
+                "quiet": True,
+            }
+            opts.update(extra)
+            self.after(0, self._set_status, "動画情報を取得中…", P["FG"], "")
             with yt_dlp.YoutubeDL(opts) as ydl:
                 self._ydl_ref = ydl
                 info = ydl.extract_info(url, download=True)
@@ -983,8 +1068,8 @@ class VideoDownloaderApp(tk.Tk):
             self.after(0, self._on_cancelled)
         except yt_dlp.utils.DownloadError as e:
             self.after(0, self._on_error, str(e))
-        except Exception as e:
-            self.after(0, self._on_error, str(e))
+        except Exception:
+            self.after(0, self._on_error, traceback.format_exc())
 
     def _update_progress(self, pct, status, meta):
         self._progress.set(pct, P["ACCENT"])
@@ -1039,6 +1124,14 @@ class VideoDownloaderApp(tk.Tk):
 # ──────────────────────────────────────────────────────
 #  Utilities
 # ──────────────────────────────────────────────────────
+def _fmt_size(b: float) -> str:
+    if b >= 1_000_000_000:
+        return f"{b/1_000_000_000:.2f} GB"
+    if b >= 1_000_000:
+        return f"{b/1_000_000:.1f} MB"
+    return f"{b/1_000:.0f} KB"
+
+
 def _fmt_speed(bps: float) -> str:
     if bps >= 1_000_000:
         return f"{bps/1_000_000:.1f} MB/s"
