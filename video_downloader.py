@@ -151,24 +151,26 @@ def _download_latest_ytdlp(libs_dir: str) -> tuple[str | None, str]:
 # ──────────────────────────────────────────────────────
 #  Design tokens
 # ──────────────────────────────────────────────────────
+# Apple Human Interface Guidelines のダークモード・システムカラーに準拠
+# https://developer.apple.com/design/human-interface-guidelines/color
 P = dict(
-    BG="#0d0d15",        # ウィンドウ背景
-    CARD="#15151f",      # カード背景
-    FIELD="#1c1c2a",     # 入力欄背景
-    FIELD_HI="#202030",  # 入力欄 hover
-    BORDER="#262636",    # 枠線
-    BORDER_HI="#3b3b55", # 枠線 hover
-    ACCENT="#7c5cfc",    # アクセント（紫）
-    ACCENT_H="#9075ff",  # アクセント hover
-    ACCENT_D="#5f43e0",  # アクセント press
-    ACCENT_BG="#251d45", # アクセント淡色背景（選択チップ）
-    FG="#eef0f8",
-    SUB="#84849e",
-    DIM="#565670",
-    SUCCESS="#34d399",
-    WARN="#fbbf24",
-    ERR="#f87171",
-    LOG_BG="#10101a",
+    BG="#1c1c1e",        # systemBackground (secondary, elevated)
+    CARD="#2c2c2e",      # tertiarySystemBackground
+    FIELD="#3a3a3c",     # systemFill
+    FIELD_HI="#48484a",  # systemFill hover
+    BORDER="#38383a",    # separator
+    BORDER_HI="#545456", # separator hover
+    ACCENT="#0a84ff",    # systemBlue (dark)
+    ACCENT_H="#409cff",  # systemBlue hover
+    ACCENT_D="#0069d9",  # systemBlue press
+    ACCENT_BG="#0a84ff", # 選択チップ（塗りつぶし）
+    FG="#ffffff",        # label
+    SUB="#98989f",       # secondaryLabel
+    DIM="#6e6e73",       # tertiaryLabel
+    SUCCESS="#30d158",   # systemGreen
+    WARN="#ffd60a",      # systemYellow
+    ERR="#ff453a",       # systemRed
+    LOG_BG="#242426",
 )
 
 FONT = "Segoe UI"
@@ -207,7 +209,7 @@ class Tooltip:
         tw.wm_geometry(f"+{x}+{y}")
         tw.attributes("-topmost", True)
         tk.Label(tw, text=self.text, font=(FONT, 9),
-                 bg="#26263a", fg=P["FG"],
+                 bg="#48484a", fg=P["FG"],
                  padx=10, pady=5).pack()
 
     def _hide(self, _=None):
@@ -244,13 +246,13 @@ class RoundedButton(tk.Canvas):
     def _palette(self):
         if self._kind == "accent":
             if self._state == "disabled":
-                return "#2b2b40", "", "#5e5e78"
+                return "#3a3a3c", "", "#7c7c80"
             fill = P["ACCENT_D"] if self._press else (
                 P["ACCENT_H"] if self._hover else P["ACCENT"])
             return fill, "", "#ffffff"
         # ghost
         if self._state == "disabled":
-            return P["CARD"], P["BORDER"], "#4c4c62"
+            return P["CARD"], P["BORDER"], "#6e6e73"
         fill = P["FIELD_HI"] if (self._hover or self._press) else P["FIELD"]
         outline = P["BORDER_HI"] if self._hover else P["BORDER"]
         return fill, outline, P["FG"]
@@ -391,7 +393,8 @@ class Switch(tk.Frame):
         c = self._cv
         c.delete("all")
         w, h = 42, 24
-        track = P["ACCENT"] if self._value else "#2b2b40"
+        # macOS/iOS のトグルは ON=systemGreen
+        track = P["SUCCESS"] if self._value else "#39393b"
         _round_rect(c, 1, 3, w - 1, h - 3, (h - 6) / 2, fill=track, outline=track)
         kx = w - 11 if self._value else 11
         c.create_oval(kx - 7, h / 2 - 7, kx + 7, h / 2 + 7,
@@ -459,7 +462,7 @@ class RoundedProgress(tk.Canvas):
             return
         # Tk は 8桁(アルファ付き)カラー非対応。トラックは不透明色のみで描く
         _round_rect(self, 0, 0, w - 1, h - 1, h / 2,
-                    fill="#222234", outline="#222234")
+                    fill="#3a3a3c", outline="#3a3a3c")
         fw = w * self._pct / 100
         if fw >= h:
             _round_rect(self, 0, 0, fw - 1, h - 1, h / 2,
@@ -469,7 +472,7 @@ class RoundedProgress(tk.Canvas):
 class Card(tk.Canvas):
     """角丸カード。self.inner に内容を配置する。expand=True で親に合わせて伸縮。"""
 
-    def __init__(self, master, padx=20, pady=16, radius=16, expand=False):
+    def __init__(self, master, padx=20, pady=16, radius=12, expand=False):
         super().__init__(master, bg=master.cget("bg"),
                          highlightthickness=0, bd=0)
         self._padx, self._pady = padx, pady
@@ -784,7 +787,7 @@ class VideoDownloaderApp(tk.Tk):
                                     bg=P["CARD"], fg=P["DIM"])
         self._meta_label.pack(side="right")
 
-        self._progress = RoundedProgress(si, height=8)
+        self._progress = RoundedProgress(si, height=6)
         self._progress.pack(fill="x", pady=(8, 12))
 
         lrow = tk.Frame(si, bg=P["CARD"])
