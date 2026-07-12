@@ -1,5 +1,9 @@
 # Video Downloader
 
+[![release](https://img.shields.io/github/v/release/myuto2490/VideoDownloader?label=release&color=0A84FF)](https://github.com/myuto2490/VideoDownloader/releases/latest)
+[![License](https://img.shields.io/badge/License-MIT-2ea44f)](LICENSE)
+[![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078D6)](https://github.com/myuto2490/VideoDownloader/releases/latest)
+
 URL を貼り付けるだけで動画・音声を保存できる Windows 用デスクトップアプリです。
 [yt-dlp](https://github.com/yt-dlp/yt-dlp) を内蔵し、Apple Human Interface Guidelines に沿ったダークテーマの GUI で操作できます。
 
@@ -42,13 +46,13 @@ YouTube などのサイトは仕様が頻繁に変わるため、**yt-dlp は定
 
 ### ソースから実行
 
-```
+```sh
 python video_downloader.py
 ```
 
 ### exe のビルド
 
-```
+```sh
 python -m PyInstaller VideoDownloader.spec --noconfirm
 ```
 
@@ -59,7 +63,7 @@ python -m PyInstaller VideoDownloader.spec --noconfirm
 1. `video_downloader.py` の `APP_VERSION` を更新
 2. コミットしてタグを打つ:
 
-   ```
+   ```sh
    git tag v1.0.1
    git push origin main --tags
    ```
