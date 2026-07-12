@@ -14,6 +14,8 @@ import zipfile
 import urllib.request
 from datetime import datetime
 
+APP_VERSION = "1.0.0"
+
 
 # ──────────────────────────────────────────────────────
 #  libs/ setup  (exeと同じフォルダの libs/ を優先ロード)
@@ -100,7 +102,22 @@ def _save_config():
 #  yt-dlp updater (PyPI wheel 直接ダウンロード方式)
 # ──────────────────────────────────────────────────────
 _PYPI_URL = "https://pypi.org/pypi/yt-dlp/json"
-_UA = "VideoDownloader/2.0 (yt-dlp-updater)"
+_UA = f"VideoDownloader/{APP_VERSION} (yt-dlp-updater)"
+
+
+def _ver_tuple(v: str):
+    """'2026.07.04' と '2026.7.4' を同一視できるよう数値タプル化する。"""
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except (ValueError, AttributeError):
+        return None
+
+
+def _same_version(a: str | None, b: str | None) -> bool:
+    ta, tb = _ver_tuple(a), _ver_tuple(b)
+    if ta is not None and tb is not None:
+        return ta == tb
+    return a == b
 
 
 def _fetch_json(url: str) -> dict:
@@ -118,7 +135,7 @@ def _download_latest_ytdlp(libs_dir: str) -> tuple[str | None, str]:
     latest = data["info"]["version"]
 
     current = getattr(yt_dlp.version, "__version__", None) if yt_dlp else None
-    if current == latest:
+    if _same_version(current, latest):
         return None, latest  # already up-to-date
 
     # none-any wheel (pure Python) を探す
@@ -656,7 +673,7 @@ class VideoDownloaderApp(tk.Tk):
         tbox.pack(side="left")
         tk.Label(tbox, text="Video Downloader",
                  font=(FONT, 17, "bold"), bg=P["BG"], fg=P["FG"]).pack(anchor="w")
-        tk.Label(tbox, text="URLを貼り付けるだけで動画・音声を保存",
+        tk.Label(tbox, text=f"URLを貼り付けるだけで動画・音声を保存  ·  v{APP_VERSION}",
                  font=(FONT, 9), bg=P["BG"], fg=P["DIM"]).pack(anchor="w")
         self._ytdlp_badge = Pill(hdr, "yt-dlp 確認中…", P["WARN"])
         self._ytdlp_badge.pack(side="right")
@@ -897,6 +914,21 @@ class VideoDownloaderApp(tk.Tk):
         if not shutil.which("ffmpeg"):
             self._log_msg("ffmpeg が見つかりません。高画質(映像+音声の結合)や "
                           "MP3変換にはffmpegが必要です。", "warn")
+        threading.Thread(target=self._check_ytdlp_update, daemon=True).start()
+
+    def _check_ytdlp_update(self):
+        """起動時にバックグラウンドで yt-dlp の新バージョンを確認する。"""
+        try:
+            latest = _fetch_json(_PYPI_URL)["info"]["version"]
+            current = getattr(yt_dlp.version, "__version__", None)
+            if current and not _same_version(current, latest):
+                self.after(0, self._ytdlp_badge.set,
+                           f"yt-dlp {current} → {latest} 更新あり", P["WARN"])
+                self.after(0, self._log_msg,
+                           f"yt-dlp の新バージョン {latest} があります。"
+                           "右上の 🔄 ボタンで更新してください。", "warn")
+        except Exception:
+            pass  # オフライン時などは黙って無視
 
     # ── Helpers ────────────────────────────────────────
     def _on_log_scroll(self, first, last):
