@@ -24,11 +24,19 @@ jobs:
       - name: Build exe
         run: python -m PyInstaller VideoDownloader.spec --noconfirm
 
+      - name: Download ffmpeg (yt-dlp official build)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip" -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_tmp
+
       - name: Package
         shell: pwsh
         run: |
           New-Item -ItemType Directory package\VideoDownloader | Out-Null
           Copy-Item dist\VideoDownloader.exe package\VideoDownloader\
+          Copy-Item ffmpeg_tmp\*\bin\ffmpeg.exe, ffmpeg_tmp\*\bin\ffprobe.exe package\VideoDownloader\
+          Copy-Item ffmpeg_tmp\*\LICENSE.txt package\VideoDownloader\FFMPEG_LICENSE.txt -ErrorAction SilentlyContinue
           Compress-Archive -Path package\VideoDownloader -DestinationPath VideoDownloader.zip
 
       - name: Create Release

@@ -14,7 +14,7 @@ import zipfile
 import urllib.request
 from datetime import datetime
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 
 # ──────────────────────────────────────────────────────
@@ -163,6 +163,57 @@ def _download_latest_ytdlp(libs_dir: str) -> tuple[str | None, str]:
                 z.extract(member, libs_dir)
 
     return current, latest
+
+
+# ──────────────────────────────────────────────────────
+#  ffmpeg auto-setup (yt-dlp 公式ビルドを libs/ffmpeg/ に取得)
+# ──────────────────────────────────────────────────────
+_FFMPEG_URL = ("https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/"
+               "download/ffmpeg-master-latest-win64-gpl.zip")
+
+
+def _find_ffmpeg() -> str | None:
+    """exe同梱 → libs/ffmpeg/ → PATH の順で ffmpeg.exe を探す。"""
+    base = _get_base_dir()
+    for c in (os.path.join(base, "ffmpeg.exe"),
+              os.path.join(_LIBS_DIR, "ffmpeg", "ffmpeg.exe")):
+        if os.path.isfile(c):
+            return c
+    return shutil.which("ffmpeg")
+
+
+def _download_ffmpeg(progress=None) -> str:
+    """ffmpeg.exe / ffprobe.exe を libs/ffmpeg/ にダウンロード・展開する。
+    progress には 0-100 の float が渡される。"""
+    dest = os.path.join(_LIBS_DIR, "ffmpeg")
+    os.makedirs(dest, exist_ok=True)
+    tmp = os.path.join(dest, "_ffmpeg.zip")
+    req = urllib.request.Request(_FFMPEG_URL, headers={"User-Agent": _UA})
+    with urllib.request.urlopen(req, timeout=600) as r, open(tmp, "wb") as f:
+        total = int(r.headers.get("Content-Length") or 0)
+        done = 0
+        while True:
+            chunk = r.read(256 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+            done += len(chunk)
+            if progress and total:
+                progress(done / total * 100)
+    try:
+        with zipfile.ZipFile(tmp) as z:
+            for m in z.namelist():
+                name = os.path.basename(m)
+                if name in ("ffmpeg.exe", "ffprobe.exe"):
+                    with z.open(m) as src, \
+                            open(os.path.join(dest, name), "wb") as out:
+                        shutil.copyfileobj(src, out)
+    finally:
+        os.remove(tmp)
+    exe = os.path.join(dest, "ffmpeg.exe")
+    if not os.path.isfile(exe):
+        raise RuntimeError("アーカイブ内に ffmpeg.exe が見つかりませんでした。")
+    return exe
 
 
 # ──────────────────────────────────────────────────────
@@ -832,6 +883,8 @@ class VideoDownloaderApp(tk.Tk):
         self._downloading = False
         self._cancel_flag = False
         self._ydl_ref = None
+        self._ffmpeg_path = None
+        self._ffmpeg_downloading = False
 
     # ── Options collapse ───────────────────────────────
     def _on_window_resize(self, event):
@@ -911,10 +964,40 @@ class VideoDownloaderApp(tk.Tk):
         src = "libs/" if _YTDLP_SOURCE == "libs" else "内蔵"
         self._ytdlp_badge.set(f"yt-dlp {ver}", P["SUCCESS"])
         self._log_msg(f"yt-dlp {ver} を検出しました ({src})。", "dim")
-        if not shutil.which("ffmpeg"):
-            self._log_msg("ffmpeg が見つかりません。高画質(映像+音声の結合)や "
-                          "MP3変換にはffmpegが必要です。", "warn")
+        self._ffmpeg_path = _find_ffmpeg()
+        if self._ffmpeg_path:
+            self._log_msg(f"ffmpeg を検出しました: {self._ffmpeg_path}", "dim")
+        else:
+            self._log_msg("ffmpeg が見つからないため、自動セットアップを開始します"
+                          "（初回のみ・約100MB）。", "warn")
+            self._ffmpeg_downloading = True
+            threading.Thread(target=self._ffmpeg_setup_thread,
+                             daemon=True).start()
         threading.Thread(target=self._check_ytdlp_update, daemon=True).start()
+
+    def _ffmpeg_setup_thread(self):
+        last = -25
+
+        def progress(pct):
+            nonlocal last
+            if pct - last >= 25:
+                last = pct
+                self.after(0, self._log_msg,
+                           f"ffmpeg をダウンロード中… {pct:.0f}%", "dim")
+
+        try:
+            path = _download_ffmpeg(progress)
+            self._ffmpeg_path = path
+            self.after(0, self._log_msg,
+                       "ffmpeg のセットアップが完了しました。", "success")
+        except Exception as e:
+            self.after(0, self._log_msg,
+                       f"ffmpeg の自動セットアップに失敗しました: {e}", "error")
+            self.after(0, self._log_msg,
+                       "手動で ffmpeg.exe を exe と同じフォルダに置いても使えます。",
+                       "warn")
+        finally:
+            self._ffmpeg_downloading = False
 
     def _check_ytdlp_update(self):
         """起動時にバックグラウンドで yt-dlp の新バージョンを確認する。"""
@@ -1028,6 +1111,16 @@ class VideoDownloaderApp(tk.Tk):
         if not out:
             messagebox.showwarning("保存先が必要です", "保存先フォルダを選択してください。")
             return
+        # M4A 以外は結合・変換に ffmpeg が必要
+        if self._format_chips.get() != "M4A" and not self._ffmpeg_path:
+            if self._ffmpeg_downloading:
+                messagebox.showinfo(
+                    "ffmpeg を準備中です",
+                    "ffmpeg の自動セットアップが完了してからお試しください。\n"
+                    "進行状況はログに表示されます。")
+                return
+            self._log_msg("ffmpeg なしで続行します。高画質の結合や MP3 変換は"
+                          "失敗する可能性があります。", "warn")
         os.makedirs(out, exist_ok=True)
         self._cancel_flag = False
         self._set_downloading(True)
@@ -1087,6 +1180,8 @@ class VideoDownloaderApp(tk.Tk):
                 "noprogress": True,
                 "quiet": True,
             }
+            if self._ffmpeg_path:
+                opts["ffmpeg_location"] = os.path.dirname(self._ffmpeg_path)
             opts.update(extra)
             self.after(0, self._set_status, "動画情報を取得中…", P["FG"], "")
             with yt_dlp.YoutubeDL(opts) as ydl:
