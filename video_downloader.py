@@ -614,11 +614,30 @@ class Card(tk.Canvas):
         self.bind("<Configure>", lambda _: self._draw())
         if not expand:
             self.inner.bind("<Configure>", lambda _: self._fit())
+            # Tk 9.0 では inner の <Configure> が中身の増減で発火しないことがあり、
+            # カードの高さが更新されずに内容がクリップされる。初期表示を確実にする
+            # ため、レイアウト確定後に明示的な再フィットを予約する。
+            self.after_idle(self.refit)
 
     def _fit(self):
         h = self.inner.winfo_reqheight() + 2 * self._pady
         if self.winfo_height() != h:
             self.configure(height=h)
+
+    def refit(self):
+        """内容の高さに合わせてカードを確実に再計算・再描画する。
+        設定の開閉など、中身のサイズが変わったときに呼ぶ。"""
+        if self._expand:
+            self._draw()
+            return
+        try:
+            self.inner.update_idletasks()
+        except tk.TclError:
+            return
+        h = self.inner.winfo_reqheight() + 2 * self._pady
+        self.configure(height=h)
+        self.update_idletasks()
+        self._draw()
 
     def _draw(self):
         self.delete("all")
@@ -840,6 +859,7 @@ class VideoDownloaderApp(tk.Tk):
         # ─ Options card (折りたたみ可能) ─
         oc = Card(root)
         oc.pack(fill="x", pady=(0, 14))
+        self._opt_card = oc
         inner = oc.inner
 
         ohdr = tk.Frame(inner, bg=P["CARD"])
@@ -979,6 +999,10 @@ class VideoDownloaderApp(tk.Tk):
         else:
             self._opt_body.pack(fill="x", pady=(12, 0))
             self._opt_toggle.configure(text="▲ たたむ")
+        # Tk 9.0 では pack/forget だけではカードの高さが追従せず内容が
+        # クリップされる（＝ボタンが押せない）ため、明示的に再フィットする。
+        if getattr(self, "_opt_card", None):
+            self.after_idle(self._opt_card.refit)
         if save:
             _config[OPTS_COLLAPSED_KEY] = "1" if self._opts_collapsed else "0"
             _save_config()
