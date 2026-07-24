@@ -5,7 +5,10 @@
 [![platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-0078D6)](https://github.com/myuto2490/VideoDownloader/releases/latest)
 
 URL を貼り付けるだけで動画・音声を保存できるデスクトップアプリです（**Windows / macOS 対応**）。
-[yt-dlp](https://github.com/yt-dlp/yt-dlp) を内蔵し、Apple Human Interface Guidelines に沿ったダークテーマの GUI で操作できます。
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) を内蔵しています。
+
+- **macOS**: Apple Human Interface Guidelines に沿った **ネイティブ（Aqua）UI**。システム標準のコントロール・SF システムフォント・アクセントカラーを使い、**ライト/ダークは macOS の設定に自動追従**します。
+- **Windows**: HIG に着想を得たダークテーマの GUI。
 
 ![screenshot](docs/screenshot.png)
 

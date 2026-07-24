@@ -59,6 +59,8 @@ app = BUNDLE(
         'CFBundleShortVersionString': '1.1.0',
         'CFBundleVersion': '1.1.0',
         'NSHighResolutionCapable': True,
+        # ライト/ダークのシステム外観に自動追従する（旧 Aqua 固定にしない）
+        'NSRequiresAquaSystemAppearance': False,
         'LSMinimumSystemVersion': '11.0',
         'NSHumanReadableCopyright': 'MIT License',
     },

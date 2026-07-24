@@ -5,6 +5,7 @@ import os
 os.environ.setdefault("TK_SILENCE_DEPRECATION", "1")
 
 import tkinter as tk
+from tkinter import ttk
 from tkinter import font as tkfont
 from tkinter import filedialog, messagebox
 import importlib.abc
@@ -698,6 +699,97 @@ _ICON_B64 = (
 )
 
 
+# ──────────────────────────────────────────────────────
+#  macOS ネイティブ (Aqua) デザイン
+#    Apple Human Interface Guidelines に沿い、システム標準のコントロール・
+#    ダイナミックシステムカラー・システムフォントを使う。ライト/ダークは
+#    macOS の設定に自動追従する。
+# ──────────────────────────────────────────────────────
+def _mac_is_dark() -> bool:
+    """macOS がダークモードかどうか。"""
+    try:
+        out = subprocess.run(["defaults", "read", "-g", "AppleInterfaceStyle"],
+                             capture_output=True, text=True).stdout.strip()
+        return out == "Dark"
+    except Exception:
+        return False
+
+
+# ダイナミックシステムカラー（Tk aqua が自動でライト/ダークに解決する）
+class MAC:
+    LABEL = "systemLabelColor"
+    SECONDARY = "systemSecondaryLabelColor"
+    TERTIARY = "systemTertiaryLabelColor"
+    WINDOW_BG = "systemWindowBackgroundColor"
+    TEXT_BG = "systemTextBackgroundColor"
+    SEPARATOR = "systemSeparatorColor"
+    ACCENT = "systemControlAccentColor"
+    LINK = "systemLinkColor"
+
+
+def _mac_status_colors():
+    """赤/緑/黄はダイナミック名が無いため、外観に合わせた system カラーを返す。"""
+    dark = _mac_is_dark()
+    return dict(
+        SUCCESS="#32D74B" if dark else "#28A745",
+        WARN="#FFD60A" if dark else "#B25000",
+        ERR="#FF453A" if dark else "#D70015",
+    )
+
+
+class _AquaButton(ttk.Button):
+    """ネイティブの macOS プッシュボタン。既存コードの set_state/set_text に対応。"""
+
+    def set_state(self, state: str):
+        self.state(["disabled"] if state == "disabled" else ["!disabled"])
+
+    def set_text(self, text: str):
+        self.configure(text=text)
+
+
+class _AquaPrimaryButton(tk.Button):
+    """アクセントカラーの既定ボタン（青い「保存」ボタン）。
+    aqua では tk.Button に default='active' を指定するとシステム標準の
+    既定ボタン（アクセント色・Return で発火）になる。"""
+
+    def __init__(self, master, text, command=None):
+        super().__init__(master, text=text, command=command,
+                         default="active", highlightbackground=MAC.WINDOW_BG)
+        self._command = command
+
+    def set_state(self, state: str):
+        self.configure(state="disabled" if state == "disabled" else "normal")
+
+    def set_text(self, text: str):
+        self.configure(text=text)
+
+
+class _AquaProgress(ttk.Progressbar):
+    """ネイティブのプログレスバー。既存コードの set(pct, color) に対応。"""
+
+    def set(self, pct: float, color: str | None = None):
+        self.configure(value=max(0.0, min(100.0, pct)))
+
+
+class _AquaSwitch(ttk.Checkbutton):
+    """ネイティブのチェックボックス。既存コードの get() に対応。"""
+
+    def __init__(self, master, text, value=False, command=None):
+        self._var = tk.BooleanVar(value=value)
+        super().__init__(master, text=text, variable=self._var,
+                         command=lambda: command and command(self._var.get()))
+
+    def get(self) -> bool:
+        return self._var.get()
+
+
+class _AquaBadge(ttk.Label):
+    """ステータス表示（yt-dlp のバージョン等）。既存コードの set(text, color) に対応。"""
+
+    def set(self, text: str, color: str):
+        self.configure(text=f"●  {text}", foreground=color)
+
+
 class _YdlLogger:
     """yt-dlp の実行ログを GUI のログ欄へ流す。"""
 
@@ -737,18 +829,44 @@ class VideoDownloaderApp(tk.Tk):
     def __init__(self):
         super().__init__()
         _load_config()
+        self._init_colors()
         self.title("Video Downloader")
-        self.configure(bg=P["BG"])
+        if _IS_MAC:
+            self.configure(bg=MAC.WINDOW_BG)
+        else:
+            self.configure(bg=P["BG"])
         self.minsize(520, 460)
         self._set_app_icon()
-        self._center_window(900, 720)
+        self._center_window(880, 700 if _IS_MAC else 720)
         self._build_ui()
         self.update_idletasks()
         self._enable_dark_titlebar()
         self._bring_to_front()
         self._check_ytdlp()
         self.bind("<FocusIn>", self._auto_paste, add="+")
-        self.bind("<Configure>", self._on_window_resize, add="+")
+        if not _IS_MAC:
+            self.bind("<Configure>", self._on_window_resize, add="+")
+
+    def _init_colors(self):
+        """状態表示に使う意味的な色。macOS はダイナミックシステムカラーで
+        ライト/ダークに自動追従、Windows は従来のダークパレット。"""
+        if _IS_MAC:
+            sc = _mac_status_colors()
+            self.C_FG = MAC.LABEL
+            self.C_SUB = MAC.SECONDARY
+            self.C_DIM = MAC.TERTIARY
+            self.C_ACCENT = MAC.ACCENT
+            self.C_SUCCESS = sc["SUCCESS"]
+            self.C_WARN = sc["WARN"]
+            self.C_ERR = sc["ERR"]
+        else:
+            self.C_FG = P["FG"]
+            self.C_SUB = P["SUB"]
+            self.C_DIM = P["DIM"]
+            self.C_ACCENT = P["ACCENT"]
+            self.C_SUCCESS = P["SUCCESS"]
+            self.C_WARN = P["WARN"]
+            self.C_ERR = P["ERR"]
 
     def _bring_to_front(self):
         """ターミナル（.command のダブルクリック）から起動したとき、
@@ -806,6 +924,182 @@ class VideoDownloaderApp(tk.Tk):
 
     # ── UI construction ────────────────────────────────
     def _build_ui(self):
+        if _IS_MAC:
+            self._build_ui_mac()
+        else:
+            self._build_ui_custom()
+
+    # ── Native macOS (Aqua) UI ─────────────────────────
+    def _build_ui_mac(self):
+        """Apple HIG に沿ったネイティブ Aqua UI。システム標準のコントロール・
+        システムフォント・ダイナミックカラーを使い、ライト/ダークに自動追従する。"""
+        style = ttk.Style(self)
+        # ネイティブの見た目に任せる（aqua テーマ）
+        # ログ／プレースホルダ用のシステムフォント
+        base = tkfont.nametofont("TkDefaultFont").actual()
+        self._mac_font = (base["family"], 13)
+        self._mac_font_small = (base["family"], 11)
+        self._mac_font_title = (base["family"], 20, "bold")
+        self._mac_font_mono = (MONO_FONT, 11)   # Menlo
+
+        root = ttk.Frame(self, padding=(20, 16, 20, 18))
+        root.pack(fill="both", expand=True)
+        root.columnconfigure(0, weight=1)
+
+        # ─ Header ─
+        hdr = ttk.Frame(root)
+        hdr.grid(row=0, column=0, sticky="ew", pady=(0, 14))
+        hdr.columnconfigure(1, weight=1)
+        if getattr(self, "_icon_img", None):
+            self._icon_small = self._icon_img.subsample(2, 2)
+            ttk.Label(hdr, image=self._icon_small).grid(row=0, column=0,
+                                                        rowspan=2, padx=(0, 12))
+        ttk.Label(hdr, text="Video Downloader",
+                  font=self._mac_font_title).grid(row=0, column=1, sticky="w")
+        ttk.Label(hdr, text=f"URL を貼り付けるだけで動画・音声を保存  ·  v{APP_VERSION}",
+                  font=self._mac_font_small,
+                  foreground=MAC.SECONDARY).grid(row=1, column=1, sticky="w")
+        rbox = ttk.Frame(hdr)
+        rbox.grid(row=0, column=2, rowspan=2, sticky="e")
+        self._ytdlp_badge = _AquaBadge(rbox, text="yt-dlp 確認中…",
+                                       font=self._mac_font_small,
+                                       foreground=self.C_WARN)
+        self._ytdlp_badge.pack(side="right")
+        self._update_btn = _AquaButton(rbox, text="更新",
+                                       command=self._update_ytdlp, width=5)
+        self._update_btn.pack(side="right", padx=(0, 10))
+
+        # ─ URL ─
+        ttk.Label(root, text="動画の URL", font=self._mac_font_small,
+                  foreground=MAC.SECONDARY).grid(row=1, column=0, sticky="w",
+                                                 pady=(4, 4))
+        urow = ttk.Frame(root)
+        urow.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        urow.columnconfigure(0, weight=1)
+        self._url_var = tk.StringVar()
+        self._placeholder_on = False   # mac はネイティブのプレースホルダを使う
+        self._url_entry = ttk.Entry(urow, textvariable=self._url_var,
+                                    font=self._mac_font)
+        try:
+            self._url_entry.configure(placeholder="https://…（Return で開始）")
+        except tk.TclError:
+            pass
+        self._url_entry.grid(row=0, column=0, sticky="ew", ipady=3)
+        self._url_entry.bind("<Return>", lambda _: self._start_download())
+        _AquaButton(urow, text="貼り付け", command=self._paste_url).grid(
+            row=0, column=1, padx=(8, 0))
+
+        # ─ 設定 (グループボックス) ─
+        opts = ttk.Labelframe(root, text="設定", padding=(14, 10, 14, 12))
+        opts.grid(row=3, column=0, sticky="ew", pady=(12, 0))
+        opts.columnconfigure(1, weight=1)
+
+        def _form_label(text, r):
+            ttk.Label(opts, text=text, font=self._mac_font_small,
+                      foreground=MAC.SECONDARY).grid(row=r, column=0, sticky="e",
+                                                     padx=(0, 10), pady=6)
+
+        # フォーマット（ポップアップボタン）
+        _form_label("フォーマット", 0)
+        self._format_chips = ttk.Combobox(opts, values=_FORMATS,
+                                          state="readonly", font=self._mac_font)
+        self._format_chips.set("MP4（推奨）")
+        self._format_chips.grid(row=0, column=1, sticky="w", pady=6)
+
+        # 最大解像度（ポップアップボタン）
+        _form_label("最大解像度", 1)
+        self._quality_chips = ttk.Combobox(opts, values=_QUALITIES,
+                                           state="readonly", font=self._mac_font)
+        self._quality_chips.set("制限なし")
+        self._quality_chips.grid(row=1, column=1, sticky="w", pady=6)
+
+        # 保存先
+        _form_label("保存先", 2)
+        frow = ttk.Frame(opts)
+        frow.grid(row=2, column=1, sticky="ew", pady=6)
+        frow.columnconfigure(0, weight=1)
+        _default_media = os.path.join(os.path.expanduser("~"), "Movies")
+        self._output_var = tk.StringVar(
+            value=_config.get(OUTPUT_DIR_KEY, _default_media))
+        ttk.Entry(frow, textvariable=self._output_var,
+                  font=self._mac_font).grid(row=0, column=0, sticky="ew", ipady=2)
+        _AquaButton(frow, text="参照…", command=self._browse_folder, width=6).grid(
+            row=0, column=1, padx=(8, 0))
+        _AquaButton(frow, text="開く", command=self._open_output_folder,
+                    width=5).grid(row=0, column=2, padx=(6, 0))
+
+        # 完了後にフォルダを開く
+        self._open_after = _AquaSwitch(
+            opts, "ダウンロード完了後にフォルダを開く",
+            value=_config.get(OPEN_AFTER_KEY, "0") == "1",
+            command=self._save_open_after)
+        self._open_after.grid(row=3, column=1, sticky="w", pady=(8, 0))
+
+        # ─ アクション ─
+        arow = ttk.Frame(root)
+        arow.grid(row=4, column=0, sticky="ew", pady=(16, 8))
+        arow.columnconfigure(0, weight=1)
+        self._cancel_btn = _AquaButton(arow, text="キャンセル",
+                                       command=self._cancel_download)
+        self._cancel_btn.grid(row=0, column=1, padx=(0, 8))
+        self._cancel_btn.set_state("disabled")
+        self._dl_btn = _AquaPrimaryButton(arow, text="ダウンロード",
+                                          command=self._start_download)
+        self._dl_btn.grid(row=0, column=2)
+
+        # ─ 進行状況 ─
+        self._progress = _AquaProgress(root, mode="determinate", maximum=100)
+        self._progress.grid(row=5, column=0, sticky="ew", pady=(4, 6))
+        srow = ttk.Frame(root)
+        srow.grid(row=6, column=0, sticky="ew")
+        srow.columnconfigure(0, weight=1)
+        self._status_label = ttk.Label(srow, text="待機中",
+                                       font=self._mac_font_small,
+                                       foreground=self.C_SUB)
+        self._status_label.grid(row=0, column=0, sticky="w")
+        self._meta_label = ttk.Label(srow, text="", font=self._mac_font_small,
+                                     foreground=MAC.TERTIARY)
+        self._meta_label.grid(row=0, column=1, sticky="e")
+
+        # ─ ログ ─
+        lrow = ttk.Frame(root)
+        lrow.grid(row=7, column=0, sticky="ew", pady=(12, 4))
+        lrow.columnconfigure(0, weight=1)
+        ttk.Label(lrow, text="ログ", font=self._mac_font_small,
+                  foreground=MAC.SECONDARY).grid(row=0, column=0, sticky="w")
+        LinkLabelMac = ttk.Button(lrow, text="クリア", command=self._clear_log,
+                                  style="Toolbutton", width=5)
+        LinkLabelMac.grid(row=0, column=1, sticky="e")
+
+        root.rowconfigure(8, weight=1)
+        logframe = ttk.Frame(root)
+        logframe.grid(row=8, column=0, sticky="nsew")
+        logframe.columnconfigure(0, weight=1)
+        logframe.rowconfigure(0, weight=1)
+        self._log = tk.Text(logframe, font=self._mac_font_mono,
+                            bg=MAC.TEXT_BG, fg=MAC.LABEL,
+                            insertbackground=MAC.LABEL, relief="flat", bd=0,
+                            highlightthickness=1, highlightbackground=MAC.SEPARATOR,
+                            wrap="word", state="disabled", padx=10, pady=8, height=6)
+        self._log.grid(row=0, column=0, sticky="nsew")
+        sb = ttk.Scrollbar(logframe, orient="vertical", command=self._log.yview)
+        self._log.configure(yscrollcommand=sb.set)
+        sb.grid(row=0, column=1, sticky="ns")
+        self._log.tag_config("info",    foreground=MAC.LABEL)
+        self._log.tag_config("success", foreground=self.C_SUCCESS)
+        self._log.tag_config("warn",    foreground=self.C_WARN)
+        self._log.tag_config("error",   foreground=self.C_ERR)
+        self._log.tag_config("dim",     foreground=MAC.SECONDARY)
+
+        # 状態フラグ（共通処理と同じ）
+        self._downloading = False
+        self._cancel_flag = False
+        self._ydl_ref = None
+        self._ffmpeg_path = None
+        self._ffmpeg_downloading = False
+        self._opts_collapsed = False   # mac は折りたたみ機能なし
+
+    def _build_ui_custom(self):
         root = tk.Frame(self, bg=P["BG"])
         root.pack(fill="both", expand=True, padx=24, pady=(18, 16))
 
@@ -1009,12 +1303,16 @@ class VideoDownloaderApp(tk.Tk):
 
     # ── URL placeholder ────────────────────────────────
     def _show_placeholder(self):
+        if _IS_MAC:   # ネイティブの placeholder を使うため何もしない
+            return
         if not self._url_var.get():
             self._placeholder_on = True
             self._url_entry.configure(fg=P["DIM"])
             self._url_var.set(_URL_PLACEHOLDER)
 
     def _hide_placeholder(self):
+        if _IS_MAC:
+            return
         if self._placeholder_on:
             self._placeholder_on = False
             self._url_var.set("")
@@ -1034,7 +1332,8 @@ class VideoDownloaderApp(tk.Tk):
     def _set_url(self, url: str):
         self._hide_placeholder()
         self._placeholder_on = False
-        self._url_entry.configure(fg=P["FG"])
+        if not _IS_MAC:
+            self._url_entry.configure(fg=P["FG"])
         self._url_var.set(url)
 
     def _clear_url(self):
@@ -1059,13 +1358,13 @@ class VideoDownloaderApp(tk.Tk):
     # ── yt-dlp check ───────────────────────────────────
     def _check_ytdlp(self):
         if yt_dlp is None:
-            self._ytdlp_badge.set("yt-dlp 未インストール", P["ERR"])
+            self._ytdlp_badge.set("yt-dlp 未インストール", self.C_ERR)
             self._log_msg("yt-dlp が見つかりません。右上の 🔄 ボタンでインストールしてください。",
                           "error")
             return
         ver = getattr(yt_dlp.version, "__version__", "不明")
         src = "libs/" if _YTDLP_SOURCE == "libs" else "内蔵"
-        self._ytdlp_badge.set(f"yt-dlp {ver}", P["SUCCESS"])
+        self._ytdlp_badge.set(f"yt-dlp {ver}", self.C_SUCCESS)
         self._log_msg(f"yt-dlp {ver} を検出しました ({src})。", "dim")
         self._ffmpeg_path = _find_ffmpeg()
         if self._ffmpeg_path:
@@ -1110,7 +1409,7 @@ class VideoDownloaderApp(tk.Tk):
             current = getattr(yt_dlp.version, "__version__", None)
             if current and not _same_version(current, latest):
                 self.after(0, self._ytdlp_badge.set,
-                           f"yt-dlp {current} → {latest} 更新あり", P["WARN"])
+                           f"yt-dlp {current} → {latest} 更新あり", self.C_WARN)
                 self.after(0, self._log_msg,
                            f"yt-dlp の新バージョン {latest} があります。"
                            "右上の 🔄 ボタンで更新してください。", "warn")
@@ -1166,11 +1465,12 @@ class VideoDownloaderApp(tk.Tk):
     def _set_downloading(self, state: bool):
         self._downloading = state
         self._dl_btn.set_state("disabled" if state else "normal")
-        self._dl_btn.set_text("ダウンロード中…" if state else "↓  ダウンロード開始")
+        idle = "ダウンロード" if _IS_MAC else "↓  ダウンロード開始"
+        self._dl_btn.set_text("ダウンロード中…" if state else idle)
         self._cancel_btn.set_state("normal" if state else "disabled")
 
     def _set_status(self, text: str, color: str | None = None, meta: str = ""):
-        self._status_label.configure(text=text, fg=color or P["SUB"])
+        self._status_label.configure(text=text, foreground=color or self.C_SUB)
         self._meta_label.configure(text=meta)
 
     # ── Format string ──────────────────────────────────
@@ -1228,7 +1528,7 @@ class VideoDownloaderApp(tk.Tk):
         os.makedirs(out, exist_ok=True)
         self._cancel_flag = False
         self._set_downloading(True)
-        self._progress.set(0, P["ACCENT"])
+        self._progress.set(0, self.C_ACCENT)
         self._set_status("準備中…")
         self._log_msg(f"開始: {url}", "dim")
         threading.Thread(target=self._download_thread,
@@ -1269,7 +1569,7 @@ class VideoDownloaderApp(tk.Tk):
                          "FFmpegExtractAudio": "音声を変換中…",
                          "MoveFiles": "ファイルを移動中…"}.get(pp)
                 if label:
-                    self.after(0, self._set_status, label, P["FG"], "")
+                    self.after(0, self._set_status, label, self.C_FG, "")
 
         try:
             fmt_str, extra = self._build_format_string()
@@ -1287,7 +1587,7 @@ class VideoDownloaderApp(tk.Tk):
             if self._ffmpeg_path:
                 opts["ffmpeg_location"] = os.path.dirname(self._ffmpeg_path)
             opts.update(extra)
-            self.after(0, self._set_status, "動画情報を取得中…", P["FG"], "")
+            self.after(0, self._set_status, "動画情報を取得中…", self.C_FG, "")
             with yt_dlp.YoutubeDL(opts) as ydl:
                 self._ydl_ref = ydl
                 info = ydl.extract_info(url, download=True)
@@ -1306,13 +1606,13 @@ class VideoDownloaderApp(tk.Tk):
             self.after(0, self._on_error, traceback.format_exc())
 
     def _update_progress(self, pct, status, meta):
-        self._progress.set(pct, P["ACCENT"])
-        self._set_status(status, P["FG"], meta)
+        self._progress.set(pct, self.C_ACCENT)
+        self._set_status(status, self.C_FG, meta)
 
     def _on_success(self, title, res, vcodec, filename):
         self._set_downloading(False)
-        self._progress.set(100, P["SUCCESS"])
-        self._set_status("✔ 完了", P["SUCCESS"])
+        self._progress.set(100, self.C_SUCCESS)
+        self._set_status("✔ 完了", self.C_SUCCESS)
         self._log_msg(f"完了: {title}", "success")
         self._log_msg(f"  解像度: {res}  コーデック: {vcodec}", "dim")
         self._log_msg(f"  保存先: {filename}", "dim")
@@ -1322,13 +1622,13 @@ class VideoDownloaderApp(tk.Tk):
     def _on_cancelled(self):
         self._set_downloading(False)
         self._progress.set(0)
-        self._set_status("キャンセルされました", P["WARN"])
+        self._set_status("キャンセルされました", self.C_WARN)
         self._log_msg("ダウンロードをキャンセルしました。", "warn")
 
     def _on_error(self, msg):
         self._set_downloading(False)
         self._progress.set(0)
-        self._set_status("✖ エラー", P["ERR"])
+        self._set_status("✖ エラー", self.C_ERR)
         self._log_msg(f"エラー: {msg.splitlines()[-1] if msg else '不明'}", "error")
         self._log_msg("URLが正しいか、動画が公開されているか確認してください。", "warn")
 
