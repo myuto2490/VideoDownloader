@@ -12,43 +12,49 @@ set -euo pipefail
 # このスクリプトがあるフォルダへ移動（ダブルクリック時の作業ディレクトリ対策）
 cd "$(dirname "$0")"
 
+# macOS システム Tk 8.5 の非推奨警告を抑止
+export TK_SILENCE_DEPRECATION=1
+
 echo "======================================================"
 echo "  Video Downloader (macOS)"
 echo "======================================================"
 
+# 候補の Python 一覧（新しい Homebrew 版を優先）
+CANDIDATES=(
+  /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11
+  /opt/homebrew/bin/python3 /usr/local/bin/python3 python3
+)
+
+# tkinter が import でき、かつ Tk が ver 以上か
+_tk_ok() { "$1" -c 'import tkinter' >/dev/null 2>&1; }
+_tk_modern() { "$1" -c 'import sys,tkinter; sys.exit(0 if tkinter.TkVersion>=8.6 else 1)' >/dev/null 2>&1; }
+
 # ── 1. 使う Python を決める ─────────────────────────────
-#   GUI(tkinter) が動く Python を優先。Homebrew の python-tk があれば
-#   新しい Tk 8.6 で見た目もきれいになる。無ければシステム python3 を使う。
-pick_python() {
-  for cand in /opt/homebrew/bin/python3 /usr/local/bin/python3 python3; do
-    if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "import tkinter" >/dev/null 2>&1; then
-      echo "$cand"
-      return 0
-    fi
+#   新しい Tk 8.6 が使える Python を最優先。無ければシステムの Tk 8.5 でも
+#   起動します（非推奨警告は抑止済み・動作に問題はありません）。
+PY=""
+for c in "${CANDIDATES[@]}"; do
+  command -v "$c" >/dev/null 2>&1 || continue
+  if _tk_ok "$c" && _tk_modern "$c"; then PY="$c"; break; fi
+done
+TK85_FALLBACK=0
+if [ -z "$PY" ]; then
+  for c in "${CANDIDATES[@]}"; do
+    command -v "$c" >/dev/null 2>&1 || continue
+    if _tk_ok "$c"; then PY="$c"; TK85_FALLBACK=1; break; fi
   done
-  return 1
-}
-
-PY="$(pick_python || true)"
-
-if [ -z "${PY:-}" ]; then
-  # tkinter が使える Python が無い → Homebrew があれば python-tk を入れる
-  if command -v brew >/dev/null 2>&1; then
-    echo "▶ GUI 表示に必要な python-tk をインストールします（初回のみ）..."
-    brew install python-tk || true
-    PY="$(pick_python || true)"
-  fi
 fi
-
-if [ -z "${PY:-}" ]; then
-  echo "✖ tkinter が使える Python が見つかりませんでした。"
-  echo "  Homebrew を入れて  brew install python-tk  を実行してください。"
-  echo "  Homebrew: https://brew.sh"
-  echo ""
+if [ -z "$PY" ]; then
+  echo "✖ GUI(tkinter) が使える Python が見つかりませんでした。"
+  echo "  Homebrew を入れて  brew install python-tk  を実行してください（https://brew.sh）。"
   read -r -p "Enter キーで終了します。" _ || true
   exit 1
 fi
-echo "▶ 使用する Python: $PY  ($("$PY" -c 'import sys;print(sys.version.split()[0])'))"
+if [ "$TK85_FALLBACK" = "1" ]; then
+  echo "  （ヒント: brew install python-tk を入れると、より新しい見た目の GUI になります）"
+fi
+PYVER="$("$PY" -c 'import sys,tkinter;print(sys.version.split()[0], "/ Tk", tkinter.TkVersion)')"
+echo "▶ 使用する Python: $PY  ($PYVER)"
 
 # ── 2. ffmpeg を用意（動画の結合・MP3変換に必要）──────────
 if ! command -v ffmpeg >/dev/null 2>&1; then
@@ -62,6 +68,15 @@ fi
 
 # ── 3. 仮想環境を用意して yt-dlp を入れる ────────────────
 VENV=".venv"
+# 既存 venv が別バージョンの Python（＝古い Tk）で作られていたら作り直す
+if [ -d "$VENV" ]; then
+  WANT="$("$PY" -c 'import sys;print(sys.version.split()[0])' 2>/dev/null || echo x)"
+  HAVE="$("$VENV/bin/python" -c 'import sys;print(sys.version.split()[0])' 2>/dev/null || echo y)"
+  if [ "$WANT" != "$HAVE" ]; then
+    echo "▶ Python が変わったため仮想環境を作り直します（$HAVE → $WANT）..."
+    rm -rf "$VENV"
+  fi
+fi
 if [ ! -d "$VENV" ]; then
   echo "▶ 仮想環境を作成します（初回のみ）..."
   "$PY" -m venv "$VENV"
@@ -74,6 +89,6 @@ python -m pip install --quiet --upgrade pip
 python -m pip install --quiet --upgrade yt-dlp
 
 # ── 4. 起動 ──────────────────────────────────────────────
-echo "▶ アプリを起動します。"
+echo "▶ アプリを起動します。ウィンドウが前面に表示されます。"
 echo "======================================================"
 exec python video_downloader.py

@@ -1,5 +1,9 @@
 from __future__ import annotations   # Python 3.9 でも `str | None` 注釈を使えるように
 
+import os
+# macOS のシステム Tk 8.5 の非推奨警告を抑止（tkinter を import する前に設定する）
+os.environ.setdefault("TK_SILENCE_DEPRECATION", "1")
+
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import filedialog, messagebox
@@ -8,7 +12,6 @@ import importlib.machinery
 import threading
 import subprocess
 import sys
-import os
 import io
 import json
 import shutil
@@ -723,9 +726,22 @@ class VideoDownloaderApp(tk.Tk):
         self._build_ui()
         self.update_idletasks()
         self._enable_dark_titlebar()
+        self._bring_to_front()
         self._check_ytdlp()
         self.bind("<FocusIn>", self._auto_paste, add="+")
         self.bind("<Configure>", self._on_window_resize, add="+")
+
+    def _bring_to_front(self):
+        """ターミナル（.command のダブルクリック）から起動したとき、
+        ウィンドウが他アプリの背後に隠れないよう最前面へ持ってくる。
+        アクセシビリティ権限は不要。一瞬だけ最前面固定してすぐ解除する。"""
+        try:
+            self.lift()
+            self.attributes("-topmost", True)
+            self.focus_force()
+            self.after(700, lambda: self.attributes("-topmost", False))
+        except Exception:
+            pass
 
     def report_callback_exception(self, exc, val, tb):
         """GUI コールバック内の例外を stderr ではなくログに出す
