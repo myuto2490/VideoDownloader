@@ -1,9 +1,12 @@
+from __future__ import annotations   # Python 3.9 でも `str | None` 注釈を使えるように
+
 import tkinter as tk
 from tkinter import font as tkfont
 from tkinter import filedialog, messagebox
 import importlib.abc
 import importlib.machinery
 import threading
+import subprocess
 import sys
 import os
 import io
@@ -15,6 +18,17 @@ import urllib.request
 from datetime import datetime
 
 APP_VERSION = "1.1.0"
+
+# ──────────────────────────────────────────────────────
+#  Platform detection  (Windows / macOS / Linux 共通化)
+# ──────────────────────────────────────────────────────
+_IS_WIN = sys.platform == "win32"
+_IS_MAC = sys.platform == "darwin"
+_IS_LINUX = not _IS_WIN and not _IS_MAC
+
+# 実行ファイル名（Windows は .exe）
+FFMPEG_BIN = "ffmpeg.exe" if _IS_WIN else "ffmpeg"
+FFPROBE_BIN = "ffprobe.exe" if _IS_WIN else "ffprobe"
 
 
 # ──────────────────────────────────────────────────────
@@ -166,29 +180,45 @@ def _download_latest_ytdlp(libs_dir: str) -> tuple[str | None, str]:
 
 
 # ──────────────────────────────────────────────────────
-#  ffmpeg auto-setup (yt-dlp 公式ビルドを libs/ffmpeg/ に取得)
+#  ffmpeg auto-setup
+#    Windows : yt-dlp 公式ビルド（ffmpeg + ffprobe 同梱）
+#    macOS   : evermeet.cx の静的ビルド（ffmpeg / ffprobe を個別取得）
 # ──────────────────────────────────────────────────────
-_FFMPEG_URL = ("https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/"
-               "download/ffmpeg-master-latest-win64-gpl.zip")
+# Windows 用（1つの zip に ffmpeg.exe / ffprobe.exe が入っている）
+_FFMPEG_URL_WIN = ("https://github.com/yt-dlp/FFmpeg-Builds/releases/latest/"
+                   "download/ffmpeg-master-latest-win64-gpl.zip")
+# macOS 用（バイナリごとに zip が分かれている静的ビルド）
+_FFMPEG_URL_MAC = "https://evermeet.cx/ffmpeg/getrelease/ffmpeg/zip"
+_FFPROBE_URL_MAC = "https://evermeet.cx/ffmpeg/getrelease/ffprobe/zip"
 
 
 def _find_ffmpeg() -> str | None:
-    """exe同梱 → libs/ffmpeg/ → PATH の順で ffmpeg.exe を探す。"""
+    """アプリ同梱 → libs/ffmpeg/ → PATH（Homebrew 等）の順で ffmpeg を探す。"""
     base = _get_base_dir()
-    for c in (os.path.join(base, "ffmpeg.exe"),
-              os.path.join(_LIBS_DIR, "ffmpeg", "ffmpeg.exe")):
+    for c in (os.path.join(base, FFMPEG_BIN),
+              os.path.join(_LIBS_DIR, "ffmpeg", FFMPEG_BIN)):
         if os.path.isfile(c):
             return c
     return shutil.which("ffmpeg")
 
 
-def _download_ffmpeg(progress=None) -> str:
-    """ffmpeg.exe / ffprobe.exe を libs/ffmpeg/ にダウンロード・展開する。
-    progress には 0-100 の float が渡される。"""
-    dest = os.path.join(_LIBS_DIR, "ffmpeg")
-    os.makedirs(dest, exist_ok=True)
-    tmp = os.path.join(dest, "_ffmpeg.zip")
-    req = urllib.request.Request(_FFMPEG_URL, headers={"User-Agent": _UA})
+def _strip_quarantine(path: str):
+    """macOS の Gatekeeper 隔離属性を外し、実行できるようにする。"""
+    if not _IS_MAC:
+        return
+    try:
+        subprocess.run(["xattr", "-d", "com.apple.quarantine", path],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
+def _download_and_extract(url: str, dest: str, wanted: set[str],
+                          progress=None, base_pct=0.0, span=100.0):
+    """url の zip をダウンロードし、basename が wanted に含まれるメンバーを
+    dest に展開する。macOS では実行権限付与＋隔離解除も行う。"""
+    tmp = os.path.join(dest, "_dl.zip")
+    req = urllib.request.Request(url, headers={"User-Agent": _UA})
     with urllib.request.urlopen(req, timeout=600) as r, open(tmp, "wb") as f:
         total = int(r.headers.get("Content-Length") or 0)
         done = 0
@@ -199,20 +229,42 @@ def _download_ffmpeg(progress=None) -> str:
             f.write(chunk)
             done += len(chunk)
             if progress and total:
-                progress(done / total * 100)
+                progress(base_pct + done / total * span)
     try:
         with zipfile.ZipFile(tmp) as z:
             for m in z.namelist():
                 name = os.path.basename(m)
-                if name in ("ffmpeg.exe", "ffprobe.exe"):
-                    with z.open(m) as src, \
-                            open(os.path.join(dest, name), "wb") as out:
+                if name in wanted:
+                    out_path = os.path.join(dest, name)
+                    with z.open(m) as src, open(out_path, "wb") as out:
                         shutil.copyfileobj(src, out)
+                    if not _IS_WIN:
+                        os.chmod(out_path, 0o755)
+                        _strip_quarantine(out_path)
     finally:
         os.remove(tmp)
-    exe = os.path.join(dest, "ffmpeg.exe")
+
+
+def _download_ffmpeg(progress=None) -> str:
+    """ffmpeg / ffprobe を libs/ffmpeg/ にダウンロード・展開する。
+    progress には 0-100 の float が渡される。"""
+    dest = os.path.join(_LIBS_DIR, "ffmpeg")
+    os.makedirs(dest, exist_ok=True)
+
+    if _IS_MAC:
+        # evermeet はバイナリごとに zip が分かれているので2回に分けて取得
+        _download_and_extract(_FFMPEG_URL_MAC, dest, {"ffmpeg"},
+                              progress, base_pct=0.0, span=60.0)
+        _download_and_extract(_FFPROBE_URL_MAC, dest, {"ffprobe"},
+                              progress, base_pct=60.0, span=40.0)
+    else:
+        # Windows / Linux は1つの zip に両方入っている
+        _download_and_extract(_FFMPEG_URL_WIN, dest,
+                              {FFMPEG_BIN, FFPROBE_BIN}, progress)
+
+    exe = os.path.join(dest, FFMPEG_BIN)
     if not os.path.isfile(exe):
-        raise RuntimeError("アーカイブ内に ffmpeg.exe が見つかりませんでした。")
+        raise RuntimeError(f"アーカイブ内に {FFMPEG_BIN} が見つかりませんでした。")
     return exe
 
 
@@ -241,7 +293,16 @@ P = dict(
     LOG_BG="#242426",
 )
 
-FONT = "Segoe UI"
+# プラットフォームごとの標準的な UI / 等幅フォント
+if _IS_MAC:
+    FONT = "Helvetica Neue"   # macOS 標準（SF系が使えない環境でも確実に存在）
+    MONO_FONT = "Menlo"
+elif _IS_WIN:
+    FONT = "Segoe UI"
+    MONO_FONT = "Consolas"
+else:
+    FONT = "DejaVu Sans"
+    MONO_FONT = "DejaVu Sans Mono"
 
 
 def _round_rect(cv: tk.Canvas, x1, y1, x2, y2, r, **kw):
@@ -795,8 +856,9 @@ class VideoDownloaderApp(tk.Tk):
         fr.pack(fill="x")
         self._folder_field = RoundedField(fr, height=40)
         self._folder_field.pack(side="left", fill="x", expand=True)
+        _default_media = "Movies" if _IS_MAC else "Videos"
         default_dir = _config.get(OUTPUT_DIR_KEY,
-                                  os.path.join(os.path.expanduser("~"), "Videos"))
+                                  os.path.join(os.path.expanduser("~"), _default_media))
         self._output_var = tk.StringVar(value=default_dir)
         out_entry = tk.Entry(self._folder_field.inner,
                              textvariable=self._output_var,
@@ -816,7 +878,8 @@ class VideoDownloaderApp(tk.Tk):
                               font=(FONT, 9), padx=14,
                               command=self._open_output_folder)
         openf.pack(side="left", padx=(6, 0))
-        Tooltip(openf, "保存先フォルダをエクスプローラーで開く")
+        Tooltip(openf, "保存先フォルダを Finder で開く" if _IS_MAC
+                else "保存先フォルダをエクスプローラーで開く")
 
         self._open_after = Switch(
             body, "ダウンロード完了後にフォルダを開く",
@@ -866,7 +929,7 @@ class VideoDownloaderApp(tk.Tk):
 
         tf = tk.Frame(si, bg=P["LOG_BG"])
         tf.pack(fill="both", expand=True, pady=(6, 0))
-        self._log = tk.Text(tf, font=("Consolas", 9),
+        self._log = tk.Text(tf, font=(MONO_FONT, 11 if _IS_MAC else 9),
                             bg=P["LOG_BG"], fg=P["FG"], relief="flat", bd=0,
                             wrap="word", state="disabled",
                             padx=10, pady=8, height=3)
@@ -969,7 +1032,7 @@ class VideoDownloaderApp(tk.Tk):
             self._log_msg(f"ffmpeg を検出しました: {self._ffmpeg_path}", "dim")
         else:
             self._log_msg("ffmpeg が見つからないため、自動セットアップを開始します"
-                          "（初回のみ・約100MB）。", "warn")
+                          "（初回のみ）。", "warn")
             self._ffmpeg_downloading = True
             threading.Thread(target=self._ffmpeg_setup_thread,
                              daemon=True).start()
@@ -993,9 +1056,10 @@ class VideoDownloaderApp(tk.Tk):
         except Exception as e:
             self.after(0, self._log_msg,
                        f"ffmpeg の自動セットアップに失敗しました: {e}", "error")
-            self.after(0, self._log_msg,
-                       "手動で ffmpeg.exe を exe と同じフォルダに置いても使えます。",
-                       "warn")
+            hint = ("Homebrew で `brew install ffmpeg` を実行すると使えます。"
+                    if _IS_MAC else
+                    f"手動で {FFMPEG_BIN} をアプリと同じフォルダに置いても使えます。")
+            self.after(0, self._log_msg, hint, "warn")
         finally:
             self._ffmpeg_downloading = False
 
@@ -1054,7 +1118,7 @@ class VideoDownloaderApp(tk.Tk):
     def _open_output_folder(self):
         folder = self._output_var.get()
         if os.path.isdir(folder):
-            os.startfile(folder)
+            _open_in_file_manager(folder)
         else:
             messagebox.showwarning("フォルダが見つかりません",
                                    f"フォルダが存在しません:\n{folder}")
@@ -1268,6 +1332,20 @@ def _fmt_speed(bps: float) -> str:
     if bps >= 1_000:
         return f"{bps/1_000:.0f} KB/s"
     return f"{bps:.0f} B/s"
+
+
+def _open_in_file_manager(path: str):
+    """保存先フォルダを OS 標準のファイルマネージャで開く。
+    Windows=エクスプローラー / macOS=Finder / Linux=xdg-open"""
+    try:
+        if _IS_WIN:
+            os.startfile(path)          # type: ignore[attr-defined]
+        elif _IS_MAC:
+            subprocess.run(["open", path])
+        else:
+            subprocess.run(["xdg-open", path])
+    except Exception:
+        pass
 
 
 def _fmt_time(s: int) -> str:

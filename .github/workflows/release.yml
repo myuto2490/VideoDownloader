@@ -9,7 +9,8 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  # ── Windows: VideoDownloader.exe (+ 同梱 ffmpeg) ────────────────
+  build-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -39,11 +40,41 @@ jobs:
           Copy-Item ffmpeg_tmp\*\LICENSE.txt package\VideoDownloader\FFMPEG_LICENSE.txt -ErrorAction SilentlyContinue
           Compress-Archive -Path package\VideoDownloader -DestinationPath VideoDownloader.zip
 
-      - name: Create Release
+      - name: Upload to Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          gh release create "${{ github.ref_name }}"
-          VideoDownloader.zip
-          --title "Video Downloader ${{ github.ref_name }}"
-          --generate-notes
+        shell: pwsh
+        run: |
+          gh release create "${{ github.ref_name }}" --title "Video Downloader ${{ github.ref_name }}" --generate-notes 2>$null; if ($LASTEXITCODE -ne 0) { Write-Host "release already exists" }
+          gh release upload "${{ github.ref_name }}" VideoDownloader.zip --clobber
+
+  # ── macOS: VideoDownloader.app（Apple Silicon）────────────────
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install yt-dlp pyinstaller
+
+      - name: Generate icns
+        run: python make_icns.py || true
+
+      - name: Build .app
+        run: python -m PyInstaller VideoDownloader-mac.spec --noconfirm
+
+      - name: Package
+        run: |
+          cd dist
+          ditto -c -k --keepParent VideoDownloader.app ../VideoDownloader-macOS.zip
+
+      - name: Upload to Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" --title "Video Downloader ${{ github.ref_name }}" --generate-notes || echo "release already exists"
+          gh release upload "${{ github.ref_name }}" VideoDownloader-macOS.zip --clobber

@@ -11,3 +11,4 @@ libs/
 
 # Per-user app settings
 .vd_config
+.venv/
