@@ -19,39 +19,49 @@ echo "======================================================"
 echo "  Video Downloader (macOS)"
 echo "======================================================"
 
-# 候補の Python 一覧（新しい Homebrew 版を優先）
-CANDIDATES=(
-  /opt/homebrew/bin/python3.13 /opt/homebrew/bin/python3.12 /opt/homebrew/bin/python3.11
-  /opt/homebrew/bin/python3 /usr/local/bin/python3 python3
-)
+# 候補の Python 一覧（新しい Homebrew 版を優先して自動探索）
+CANDIDATES=()
+for p in $(ls /opt/homebrew/bin/python3.1* /usr/local/bin/python3.1* 2>/dev/null | sort -Vr); do
+  CANDIDATES+=("$p")
+done
+CANDIDATES+=(/opt/homebrew/bin/python3 /usr/local/bin/python3 python3)
 
 # tkinter が import でき、かつ Tk が ver 以上か
 _tk_ok() { "$1" -c 'import tkinter' >/dev/null 2>&1; }
 _tk_modern() { "$1" -c 'import sys,tkinter; sys.exit(0 if tkinter.TkVersion>=8.6 else 1)' >/dev/null 2>&1; }
 
 # ── 1. 使う Python を決める ─────────────────────────────
-#   新しい Tk 8.6 が使える Python を最優先。無ければシステムの Tk 8.5 でも
-#   起動します（非推奨警告は抑止済み・動作に問題はありません）。
-PY=""
-for c in "${CANDIDATES[@]}"; do
-  command -v "$c" >/dev/null 2>&1 || continue
-  if _tk_ok "$c" && _tk_modern "$c"; then PY="$c"; break; fi
-done
-TK85_FALLBACK=0
-if [ -z "$PY" ]; then
+#   新しい Tk（8.6 以上）が使える Python が必要。
+#   ※ macOS 標準の Tk 8.5 は最近の macOS でウィンドウが真っ黒になる不具合が
+#     あるため使わない。無ければ Homebrew の python-tk を導入する。
+find_modern_py() {
   for c in "${CANDIDATES[@]}"; do
     command -v "$c" >/dev/null 2>&1 || continue
-    if _tk_ok "$c"; then PY="$c"; TK85_FALLBACK=1; break; fi
+    if _tk_ok "$c" && _tk_modern "$c"; then echo "$c"; return 0; fi
   done
+  return 1
+}
+
+PY="$(find_modern_py || true)"
+if [ -z "$PY" ]; then
+  if command -v brew >/dev/null 2>&1; then
+    echo "▶ GUI 表示に必要な新しい Tk (python-tk) をインストールします（初回のみ・数分）..."
+    brew install python-tk || true
+    # インストールで増えた versioned python を再探索
+    CANDIDATES=()
+    for p in $(ls /opt/homebrew/bin/python3.1* /usr/local/bin/python3.1* 2>/dev/null | sort -Vr); do
+      CANDIDATES+=("$p")
+    done
+    CANDIDATES+=(/opt/homebrew/bin/python3 /usr/local/bin/python3 python3)
+    PY="$(find_modern_py || true)"
+  fi
 fi
 if [ -z "$PY" ]; then
-  echo "✖ GUI(tkinter) が使える Python が見つかりませんでした。"
+  echo "✖ 新しい Tk が使える Python が見つかりませんでした。"
   echo "  Homebrew を入れて  brew install python-tk  を実行してください（https://brew.sh）。"
+  echo "  （macOS 標準の Tk 8.5 はウィンドウが真っ黒になるため使用できません）"
   read -r -p "Enter キーで終了します。" _ || true
   exit 1
-fi
-if [ "$TK85_FALLBACK" = "1" ]; then
-  echo "  （ヒント: brew install python-tk を入れると、より新しい見た目の GUI になります）"
 fi
 PYVER="$("$PY" -c 'import sys,tkinter;print(sys.version.split()[0], "/ Tk", tkinter.TkVersion)')"
 echo "▶ 使用する Python: $PY  ($PYVER)"
