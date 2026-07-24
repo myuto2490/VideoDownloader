@@ -45,7 +45,27 @@ def _get_base_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
-_LIBS_DIR = os.path.join(_get_base_dir(), "libs")
+def _is_app_bundle() -> bool:
+    """macOS の .app として実行されているか。"""
+    return _IS_MAC and getattr(sys, "frozen", False) and ".app/Contents/" in sys.executable
+
+
+def _get_data_dir() -> str:
+    """設定・libs/ など書き込み先のディレクトリ。
+
+    .app の中身を書き換えるとコード署名が壊れ、/Applications に置いた場合は
+    そもそも書けないことがあるため、macOS の .app では
+    ~/Library/Application Support/VideoDownloader を使う。"""
+    if _is_app_bundle():
+        d = os.path.join(os.path.expanduser("~/Library/Application Support"),
+                         "VideoDownloader")
+    else:
+        d = _get_base_dir()
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+_LIBS_DIR = os.path.join(_get_data_dir(), "libs")
 os.makedirs(_LIBS_DIR, exist_ok=True)
 
 if _LIBS_DIR not in sys.path:
@@ -99,7 +119,7 @@ _config: dict = {}
 
 
 def _load_config():
-    path = os.path.join(_get_base_dir(), ".vd_config")
+    path = os.path.join(_get_data_dir(), ".vd_config")
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
             for line in f:
@@ -110,7 +130,7 @@ def _load_config():
 
 
 def _save_config():
-    path = os.path.join(_get_base_dir(), ".vd_config")
+    path = os.path.join(_get_data_dir(), ".vd_config")
     with open(path, "w", encoding="utf-8") as f:
         for k, v in _config.items():
             f.write(f"{k}={v}\n")
@@ -203,7 +223,16 @@ def _find_ffmpeg() -> str | None:
               os.path.join(_LIBS_DIR, "ffmpeg", FFMPEG_BIN)):
         if os.path.isfile(c):
             return c
-    return shutil.which("ffmpeg")
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    if _IS_MAC:
+        # Finder から起動した .app の PATH には Homebrew が入っていないため、
+        # 標準的なインストール先を直接見に行く。
+        for c in ("/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"):
+            if os.path.isfile(c):
+                return c
+    return None
 
 
 def _strip_quarantine(path: str):
